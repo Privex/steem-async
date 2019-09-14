@@ -46,7 +46,7 @@ with open("README.md", "r") as fh:
 setup(
     name='steem_async',
 
-    version='1.0.0',
+    version='1.0.1',
 
     description='A simple Python library for asynchronous interactions with Steem RPC nodes (and forks)',
     long_description=long_description,

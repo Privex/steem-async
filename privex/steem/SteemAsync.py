@@ -12,7 +12,7 @@ from typing import Union, List, Generator, Any, Dict, Tuple
 import httpx
 from async_property import async_property
 from httpx.exceptions import HTTPError
-from privex.helpers import is_false, empty, is_true
+from privex.helpers import is_false, empty, is_true, run_sync, dec_round, chunked
 
 from privex.steem.exceptions import RPCException, SteemException
 from privex.steem.objects import Block, KNOWN_ASSETS, Asset, Amount, Account
@@ -26,27 +26,6 @@ log = logging.getLogger(__name__)
 
 # MAX_RETRY = 10
 # RETRY_DELAY = 3
-
-
-def chunked(iterable, n):
-    """ Split iterable into ``n`` iterables of similar size
-
-    Examples::
-        >>> l = [1, 2, 3, 4]
-        >>> list(chunked(l, 4))
-        [[1], [2], [3], [4]]
-
-        >>> l = [1, 2, 3]
-        >>> list(chunked(l, 4))
-        [[1], [2], [3], []]
-
-        >>> l = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-        >>> list(chunked(l, 4))
-        [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10]]
-
-    """
-    chunksize = int(math.ceil(len(iterable) / n))
-    return (iterable[i * chunksize:i * chunksize + chunksize] for i in range(n))
 
 
 def make_bulk_call(method, end=20, start=1, mkparams: callable = None) -> Generator[dict, None, None]:
@@ -74,34 +53,6 @@ def make_bulk_call(method, end=20, start=1, mkparams: callable = None) -> Genera
     for i in range(start, end):
         params = [i] if not mkparams else mkparams(i)
         yield {"jsonrpc": "2.0", "method": method, "params": params, "id": i}
-
-
-def dec_round(amount: Decimal, dp: int = 2) -> Decimal:
-    """Round a Decimal to x decimal places (``dp`` must be >= 1 and the default dp is 2)"""
-    dp = int(dp)
-    if dp <= 0:
-        raise ArithmeticError('dec_round expects dp >= 1')
-    dp_str = '.' + str('0' * (dp - 1)) + '1'
-    return Decimal(amount).quantize(Decimal(dp_str))
-
-
-def run_sync(func, *args, **kwargs):
-    """
-    Run an async function synchronously
-
-    Usage:
-
-        >>> async def my_async_func(a, b, x=None, y=None):
-        ...     return a, b, x, y
-        >>>
-        >>> run_sync(my_async_func, 1, 2, x=3, y=4)
-        (1, 2, 3, 4,)
-
-    """
-    coro = asyncio.coroutine(func)
-    future = coro(*args, **kwargs)
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(future)
 
 
 class CacheHelper:

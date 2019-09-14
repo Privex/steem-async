@@ -1,6 +1,8 @@
 # Steem Async
 ### Async Steem library - A simple Python library for asynchronous interactions with Steem RPC nodes (and forks)
 
+[![Build Status](https://travis-ci.com/Privex/steem-async.svg?branch=master)](https://travis-ci.com/Privex/steem-async)
+
 **Official Repo:** https://github.com/privex/steem-async
 
 ### Quick Install / Usage
