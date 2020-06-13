@@ -29,6 +29,7 @@ class SteemBaseTest(ABC):
     """
 
     steem: SteemAsync
+    network = 'hive'
 
     @async_sync
     def test_get_config(self):
@@ -36,8 +37,8 @@ class SteemBaseTest(ABC):
         conf = yield from self.steem.get_config()
 
         self.assertEqual(type(conf), dict)
-        self.assertTrue('STEEM_BLOCKCHAIN_VERSION' in conf)
-        self.assertEqual(len(conf['STEEM_BLOCKCHAIN_VERSION'].split('.')), 3)
+        self.assertTrue(f'{self.network.upper()}_BLOCKCHAIN_VERSION' in conf)
+        self.assertEqual(len(conf[f'{self.network.upper()}_BLOCKCHAIN_VERSION'].split('.')), 3)
 
     @async_sync
     def test_account_history(self):
@@ -84,31 +85,46 @@ class SteemBaseTest(ABC):
         for n, a in accounts.items():
             self.assertEqual(type(a), Account, msg="type(a) is Account")
             self.assertEqual(n, a.name, msg="n == a.name")
-            self.assertIn('STEEM', a.balances, msg="'STEEM' in a.balances")
-            self.assertIn('SBD', a.balances, msg="'SBD' in a.balances")
-            self.assertGreater(a.balances['STEEM'].amount, Decimal(0), msg=f'Acc {n} has STEEM balance > 0')
+            curr_steem, curr_sbd = 'HIVE', 'HBD'
+            if self.network.upper() == 'STEEM':
+                curr_steem, curr_sbd = 'STEEM', 'SBD'
+            self.assertIn(curr_steem, a.balances, msg=f"'{curr_steem}' in a.balances")
+            self.assertIn(curr_sbd, a.balances, msg=f"'{curr_sbd}' in a.balances")
+            self.assertGreater(a.balances[curr_steem].amount, Decimal(0), msg=f'Acc {n} has {curr_steem} balance > 0')
 
     @classmethod
     def tearDownClass(cls):
         print('--------------------------------------')
 
 
-class TestAsyncSteemAppbase(SteemBaseTest, unittest.TestCase):
-    """Tests for SteemAsync with Appbase enabled (normal/modern mode)"""
-
+class TestHiveAsyncSteemAppbase(SteemBaseTest, unittest.TestCase):
+    """Tests for SteemAsync using the Hive network, with Appbase enabled (normal/modern mode)"""
+    network = 'hive'
+    
     def setUp(self):
-        self.steem = SteemAsync()
+        self.steem = SteemAsync(network=self.network)
         self.steem.config_set('use_appbase', True)
         self.assertTrue(self.steem.config('use_appbase'))
 
 
-class TestAsyncSteemCompat(SteemBaseTest, unittest.TestCase):
-    """Tests for SteemAsync with Appbase disabled (compatibility mode)"""
+class TestSteemAsyncSteemAppbase(TestHiveAsyncSteemAppbase):
+    """Tests for SteemAsync using the Steem network, with Appbase enabled (normal/modern mode)"""
+    network = 'hive'
 
+
+class TestHiveAsyncSteemCompat(SteemBaseTest, unittest.TestCase):
+    """Tests for SteemAsync using the Hive network, with Appbase disabled (compatibility mode)"""
+    network = 'hive'
+    
     def setUp(self):
-        self.steem = SteemAsync()
+        self.steem = SteemAsync(network=self.network)
         self.steem.config_set('use_appbase', False)
         self.assertFalse(self.steem.config('use_appbase'))
+
+
+class TestSteemAsyncSteemCompat(TestHiveAsyncSteemCompat):
+    """Tests for SteemAsync using the Steem network, with Appbase disabled (compatibility mode)"""
+    network = 'steem'
 
 
 if __name__ == '__main__':

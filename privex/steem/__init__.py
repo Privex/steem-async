@@ -3,9 +3,9 @@ import sys
 # noinspection PyUnresolvedReferences
 from privex.steem.SteemAsync import SteemAsync, RPCException, make_bulk_call, chunked, run_sync
 from privex.steem.exceptions import RPCException, SteemException
-from privex.steem.objects import Block, KNOWN_ASSETS, Asset, Amount, Account
+from privex.steem.objects import Block, CHAIN_ASSETS, KNOWN_ASSETS, DEFAULT_CHAIN_ID, add_known_asset_symbols, CHAIN, Asset, Amount, Account
 from json import JSONDecodeError
-from httpx.exceptions import HTTPError
+from httpx import HTTPError
 
 name = 'steem'
 

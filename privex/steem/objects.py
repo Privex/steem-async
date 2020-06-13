@@ -3,9 +3,9 @@ import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
-from typing import List, Dict
+from typing import List, Dict, Union
 
-from privex.helpers import empty
+from privex.helpers import empty, DictObject
 
 
 class Dictable:
@@ -114,9 +114,19 @@ class Block(Dictable):
         self.transactions = _t
 
 
+DEFAULT_CHAIN_ID = "0000000000000000000000000000000000000000000000000000000000000000"
+
+
 class CHAIN(Enum):
-    STEEM = "0000000000000000000000000000000000000000000000000000000000000000"
+    STEEM = DEFAULT_CHAIN_ID
+    HIVE = DEFAULT_CHAIN_ID
     GOLOS = "782a3039b478c839e4cb0c941ff4eaeb7df40bdd68bd441afd444b9da763de12"
+    
+    @classmethod
+    def as_dict(cls) -> Union[DictObject, Dict[str, str]]:
+        """Return this enum as a :class:`.DictObject` - chain names mapped to their string chain ID"""
+        # noinspection PyTypeChecker
+        return DictObject({chain.name: chain.value for chain in list(cls)})
 
 
 @dataclass
@@ -124,40 +134,71 @@ class Asset(Dictable):
     symbol: str
     precision: int = 3
     asset_id: str = None
-    network: str = CHAIN.STEEM.value
+    network: str = DEFAULT_CHAIN_ID
 
 
-KNOWN_ASSETS = {
-    "0000000000000000000000000000000000000000000000000000000000000000": {
+CHAIN_ASSETS = DictObject(
+    HIVE=DictObject({
+        '@@000000013': Asset(symbol='HBD', precision=3, asset_id='@@000000013'),
+        '@@000000021': Asset(symbol='HIVE', precision=3, asset_id='@@000000021'),
+        '@@000000037': Asset(symbol='VESTS', precision=6, asset_id='@@000000037'),
+    }),
+    STEEM=DictObject({
         '@@000000013': Asset(symbol='SBD', precision=3, asset_id='@@000000013'),
         '@@000000021': Asset(symbol='STEEM', precision=3, asset_id='@@000000021'),
         '@@000000037': Asset(symbol='VESTS', precision=6, asset_id='@@000000037'),
-    },
-    "782a3039b478c839e4cb0c941ff4eaeb7df40bdd68bd441afd444b9da763de12": {
+    }),
+    GOLOS=DictObject({
         'GOLOS': Asset(symbol='GOLOS', precision=3, network=CHAIN.GOLOS.value),
-        'GBG': Asset(symbol='GBG', precision=3, network=CHAIN.GOLOS.value),
+        'GBG':   Asset(symbol='GBG', precision=3, network=CHAIN.GOLOS.value),
         'GESTS': Asset(symbol='GESTS', precision=6, network=CHAIN.GOLOS.value),
-    }
+    })
+)
+"""Chain names (all caps) mapped to dictionaries containing asset IDs / symbols mapped to :class:`.Asset` objects."""
+
+KNOWN_ASSETS = {
+    DEFAULT_CHAIN_ID: CHAIN_ASSETS.HIVE,
+    CHAIN.GOLOS.value: CHAIN_ASSETS.GOLOS
 }   # type: Dict[str, Dict[str, Asset]]
+"""Chain IDs mapped to dictionaries containing asset IDs / symbols mapped to :class:`.Asset` objects."""
 
-STEEM_ASSETS = KNOWN_ASSETS[CHAIN.STEEM.value]
 
-# noinspection PyTypeChecker
-for c in list(CHAIN):  # type: CHAIN
-    # new_assets = dict(KNOWN_ASSETS)
-    _assets = KNOWN_ASSETS.get(c.value, {})
-    new_assets = {}
-    for a, v in _assets.items():
-        if a[0] != '@':
+STEEM_ASSETS = CHAIN_ASSETS.STEEM
+HIVE_ASSETS = CHAIN_ASSETS.HIVE
+GOLOS_ASSETS = CHAIN_ASSETS.GOLOS
+
+
+def add_known_asset_symbols(obj: Dict[str, Asset]) -> DictObject:
+    """
+    For each :class:`.Asset` in ``obj``, make sure every asset type can be matched by both asset ID (i.e. IDs starting with "@@0000"),
+    and their symbol (e.g. "HIVE").
+    
+    :param Dict[str,Asset] obj: A :class:`.dict` or :class:`.DictObject` mapping asset IDs / symbols to :class:`.Asset` objects.
+    :return DictObject new_assets: A new :class:`.DictObject` with both asset IDs (if applicable) and symbols mapped to :class:`.Asset`'s
+    """
+    new_assets = DictObject(obj)
+    
+    # Iterable over each dict key + value, only handling keys which appear to be asset ID's starting with "@".
+    # Create/update a key for the asset's symbol in new_assets to point to the asset_id's Asset object.
+    for assetID, assetObject in obj.items():
+        # If this asset's ID doesn't start with an @, then we don't need to duplicate it into it's symbol.
+        if assetID[0] != '@':
             continue
-        v.asset_id = a if empty(v.asset_id) else v.asset_id
-        new_assets[v.symbol] = v
+        # If the :class:`.Asset` object doesn't have an asset_id set, then set it to match the dictionary key
+        assetObject.asset_id = assetID if empty(assetObject.asset_id) else assetObject.asset_id
+        # Map the asset's symbol (e.g. HIVE) to the Asset object, so it can be matched by both asset ID and symbol.
+        new_assets[assetObject.symbol] = assetObject
+    
+    return new_assets
 
-    KNOWN_ASSETS[c.value] = {**KNOWN_ASSETS[c.value], **new_assets}
 
-# for c, a in KNOWN_ASSETS.items():
-#     for v, k in a.items():
-#         print(c, v, k)
+######
+# For each network in CHAIN_ASSETS and KNOWN_ASSETS, make sure every asset type can be matched by both asset ID
+# (i.e. IDs starting with "@@0000"), and their symbol (e.g. "HIVE").
+# noinspection PyTypeChecker
+for chain in list(CHAIN):  # type: CHAIN
+    KNOWN_ASSETS[chain.value] = add_known_asset_symbols(KNOWN_ASSETS.get(chain.value, {}))
+    CHAIN_ASSETS[chain.name] = add_known_asset_symbols(CHAIN_ASSETS.get(chain.name, {}))
 
 
 @dataclass

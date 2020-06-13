@@ -11,11 +11,11 @@ from typing import Union, List, Generator, Any, Dict, Tuple
 
 import httpx
 from async_property import async_property
-from httpx.exceptions import HTTPError
-from privex.helpers import is_false, empty, is_true, run_sync, dec_round, chunked
+from httpx import HTTPError
+from privex.helpers import is_false, empty, is_true, run_sync, dec_round, chunked, stringify, DictObject
 
 from privex.steem.exceptions import RPCException, SteemException
-from privex.steem.objects import Block, KNOWN_ASSETS, Asset, Amount, Account
+from privex.steem.objects import Block, KNOWN_ASSETS, Asset, Amount, Account, CHAIN_ASSETS, CHAIN, add_known_asset_symbols
 
 getcontext().prec = 40
 getcontext().rounding = ROUND_HALF_EVEN
@@ -145,12 +145,16 @@ class SteemAsync(CacheHelper):
 
 
     """
+    DEFAULT_HIVE_NODES = [
+        'https://hived.privex.io',
+        'https://hived.hive-engine.com',
+        'https://anyx.io'
+        'https://api.openhive.network'
+        'https://api.hivekings.com'
+    ]
+    DEFAULT_STEEM_NODES = ['https://api.steemit.com']
     DEFAULTS = dict(
-        rpc_nodes=[
-            'https://steemd.privex.io',
-            'https://api.steemit.com',
-            'https://steemd.minnowsupportproject.org'
-        ],
+        rpc_nodes=DEFAULT_HIVE_NODES,
         use_appbase=True,
         max_retry=10, retry_delay=3,
         batch_size=40,
@@ -159,7 +163,7 @@ class SteemAsync(CacheHelper):
 
     http = httpx.AsyncClient()
 
-    def __init__(self, rpc_nodes: List[str] = None, max_retry=10, retry_delay=3):
+    def __init__(self, rpc_nodes: List[str] = None, max_retry=10, retry_delay=3, network='hive', **kwargs):
         """
         Constructor for SteemAsync. No parameters are required, however you may optionally specify the list of
         RPC nodes (``rpc_nodes``), maximum retry attempts (``max_retry``) and (``retry_delay``) to override the
@@ -174,11 +178,25 @@ class SteemAsync(CacheHelper):
         super().__init__()
         self.CACHE = {}
         self.CONFIG = {**self.DEFAULTS, "max_retry": max_retry, "retry_delay": retry_delay}
+        self.known_assets, self.chain_assets = DictObject(KNOWN_ASSETS), DictObject(CHAIN_ASSETS)
+        self.network = network = network.lower()
+        
         if not empty(rpc_nodes, itr=True):
             rpc_nodes = [rpc_nodes] if type(rpc_nodes) is str else rpc_nodes
             self.CONFIG['rpc_nodes'] = rpc_nodes
+        elif network == 'steem':
+            self.CONFIG['rpc_nodes'] = self.DEFAULT_STEEM_NODES
+
+        if network == 'steem':
+            self.known_assets[CHAIN.STEEM.value] = add_known_asset_symbols(self.chain_assets.STEEM)
+        elif network == 'hive':
+            self.known_assets[CHAIN.HIVE.value] = add_known_asset_symbols(self.chain_assets.HIVE)
+        
         self.CONFIG['current_node'] = self.CONFIG['rpc_nodes'][0]
         self.CONFIG['current_node_id'] = 0
+        
+        
+        
 
     @property
     def use_appbase(self) -> bool: return is_true(self.config('use_appbase', True))
@@ -208,7 +226,12 @@ class SteemAsync(CacheHelper):
     async def chain_id(self) -> str:
         async def _chain_id():
             conf = await self.node_config
-            chain = conf.get('STEEM_CHAIN_ID', conf.get('STEEMIT_CHAIN_ID', None))
+            chain = None
+            for k, v in conf.items():
+                if k.upper().endswith('_CHAIN_ID'):
+                    chain = v
+            
+            # chain = conf.get('STEEM_CHAIN_ID', conf.get('STEEMIT_CHAIN_ID', None))
             if empty(chain):
                 raise SteemException('Could not find Chain ID in node get_config...')
             return chain
@@ -323,7 +346,7 @@ class SteemAsync(CacheHelper):
         except JSONDecodeError as e:
             log.warning('JSONDecodeError while querying %s', node)
             log.warning('Params: %s', params)
-            t = r.text.decode('utf-8') if type(r.text) is bytes else str(r.text)
+            t = stringify(r.text)
             log.warning('Raw response data was: %s', t)
             err = e
         except RPCException as e:
@@ -513,7 +536,7 @@ class SteemAsync(CacheHelper):
     async def _get_asset(self, asset_id: str) -> Asset:
         chain = await self.chain_id
         try:
-            return KNOWN_ASSETS[chain][asset_id]
+            return self.known_assets[chain][asset_id]
         except (KeyError, IndexError):
             raise SteemException(f"Chain ID '{chain}' or asset_id '{asset_id}' were not found in KNOWN_ASSETS.")
         except Exception:
