@@ -120,6 +120,7 @@ DEFAULT_CHAIN_ID = "000000000000000000000000000000000000000000000000000000000000
 class CHAIN(Enum):
     STEEM = DEFAULT_CHAIN_ID
     HIVE = DEFAULT_CHAIN_ID
+    BLURT = "cd8d90f29ae273abec3eaa7731e25934c63eb654d55080caff2ebb7f5df6381f"
     GOLOS = "782a3039b478c839e4cb0c941ff4eaeb7df40bdd68bd441afd444b9da763de12"
     
     @classmethod
@@ -143,6 +144,10 @@ CHAIN_ASSETS = DictObject(
         '@@000000021': Asset(symbol='HIVE', precision=3, asset_id='@@000000021'),
         '@@000000037': Asset(symbol='VESTS', precision=6, asset_id='@@000000037'),
     }),
+    BLURT=DictObject({
+        '@@000000021': Asset(symbol='BLURT', precision=3, asset_id='@@000000021'),
+        '@@000000037': Asset(symbol='VESTS', precision=6, asset_id='@@000000037'),
+    }),
     STEEM=DictObject({
         '@@000000013': Asset(symbol='SBD', precision=3, asset_id='@@000000013'),
         '@@000000021': Asset(symbol='STEEM', precision=3, asset_id='@@000000021'),
@@ -158,13 +163,15 @@ CHAIN_ASSETS = DictObject(
 
 KNOWN_ASSETS = {
     DEFAULT_CHAIN_ID: CHAIN_ASSETS.HIVE,
-    CHAIN.GOLOS.value: CHAIN_ASSETS.GOLOS
+    CHAIN.GOLOS.value: CHAIN_ASSETS.GOLOS,
+    CHAIN.BLURT.value: CHAIN_ASSETS.BLURT,
 }   # type: Dict[str, Dict[str, Asset]]
 """Chain IDs mapped to dictionaries containing asset IDs / symbols mapped to :class:`.Asset` objects."""
 
 
 STEEM_ASSETS = CHAIN_ASSETS.STEEM
 HIVE_ASSETS = CHAIN_ASSETS.HIVE
+BLURT_ASSETS = CHAIN_ASSETS.BLURT
 GOLOS_ASSETS = CHAIN_ASSETS.GOLOS
 
 

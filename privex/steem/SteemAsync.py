@@ -13,6 +13,7 @@ import httpx
 from async_property import async_property
 from httpx import HTTPError
 from privex.helpers import is_false, empty, is_true, run_sync, dec_round, chunked, stringify, DictObject
+from privex.helpers.common import empty_if
 
 from privex.steem.exceptions import RPCException, SteemException
 from privex.steem.objects import Block, KNOWN_ASSETS, Asset, Amount, Account, CHAIN_ASSETS, CHAIN, add_known_asset_symbols
@@ -153,17 +154,19 @@ class SteemAsync(CacheHelper):
         'https://api.hivekings.com'
     ]
     DEFAULT_STEEM_NODES = ['https://api.steemit.com']
+    DEFAULT_BLURT_NODES = ['https://blurtd.privex.io', 'https://api.blurt.blog', 'https://rpc.blurt.world']
     DEFAULTS = dict(
         rpc_nodes=DEFAULT_HIVE_NODES,
         use_appbase=True,
-        max_retry=10, retry_delay=3,
-        batch_size=40,
+        max_retry=10, retry_delay=2,
+        batch_size=40, timeout=10,
         headers={'content-type': 'application/json'}
     )
 
-    http = httpx.AsyncClient()
+    http: httpx.AsyncClient = httpx.AsyncClient(timeout=10)
+    context_level: int = 0
 
-    def __init__(self, rpc_nodes: List[str] = None, max_retry=10, retry_delay=3, network='hive', **kwargs):
+    def __init__(self, rpc_nodes: List[str] = None, max_retry=10, retry_delay=2, network='hive', **kwargs):
         """
         Constructor for SteemAsync. No parameters are required, however you may optionally specify the list of
         RPC nodes (``rpc_nodes``), maximum retry attempts (``max_retry``) and (``retry_delay``) to override the
@@ -173,7 +176,7 @@ class SteemAsync(CacheHelper):
 
         :param List[str] rpc_nodes: A ``List[str]`` of RPC nodes, including the ``https://`` portion
         :param int       max_retry: (Default: 10) How many times should erroneous calls be retried before raising?
-        :param int     retry_delay: (Default: 3) Amount of seconds between retry attempts
+        :param int     retry_delay: (Default: 2) Amount of seconds between retry attempts
         """
         super().__init__()
         self.CACHE = {}
@@ -186,18 +189,20 @@ class SteemAsync(CacheHelper):
             self.CONFIG['rpc_nodes'] = rpc_nodes
         elif network == 'steem':
             self.CONFIG['rpc_nodes'] = self.DEFAULT_STEEM_NODES
+        elif network == 'blurt':
+            self.CONFIG['rpc_nodes'] = self.DEFAULT_BLURT_NODES
 
         if network == 'steem':
             self.known_assets[CHAIN.STEEM.value] = add_known_asset_symbols(self.chain_assets.STEEM)
         elif network == 'hive':
             self.known_assets[CHAIN.HIVE.value] = add_known_asset_symbols(self.chain_assets.HIVE)
+        elif network == 'blurt':
+            self.known_assets[CHAIN.BLURT.value] = add_known_asset_symbols(self.chain_assets.BLURT)
         
         self.CONFIG['current_node'] = self.CONFIG['rpc_nodes'][0]
         self.CONFIG['current_node_id'] = 0
-        
-        
-        
-
+        self.CONFIG['timeout'] = kwargs.get('timeout', self.CONFIG['timeout'])
+    
     @property
     def use_appbase(self) -> bool: return is_true(self.config('use_appbase', True))
 
@@ -333,7 +338,7 @@ class SteemAsync(CacheHelper):
 
         try:
             log.debug('Sending JsonRPC request to %s with payload: %s', node, payload)
-            r = await self.http.post(node, data=payload, headers=self.config('headers', {}), timeout=120)
+            r = await self.http.post(node, data=payload, headers=self.config('headers', {}), timeout=self.config('timeout', 10))
             r.raise_for_status()
             response = r.json()
 
@@ -357,6 +362,9 @@ class SteemAsync(CacheHelper):
             log.warning('HTTP Error. Response was: %s', e.response.text)
             log.warning('Original request: %s', e.request)
             err = e
+        finally:
+            if SteemAsync.context_level == 0:
+                await self.http.aclose()
 
         if err is not False:
             # If retries is set to False, the user wants to disable automatic retry.
@@ -371,7 +379,7 @@ class SteemAsync(CacheHelper):
 
         return response
 
-    async def json_list_call(self, data: list, timeout=120, retries=0) -> Union[dict, list]:
+    async def json_list_call(self, data: list, timeout=None, retries=0) -> Union[dict, list]:
         """
         Make a JsonRPC "batch call" using the given list of JsonRPC calls as a ``List[dict]``.
 
@@ -389,13 +397,15 @@ class SteemAsync(CacheHelper):
 
 
         :param list   data: A ``List[dict]`` of JSONRPC calls to be sent as a batch call
-        :param int timeout: (Default: 120 sec) HTTP Timeout in seconds to use
+        :param int timeout: (Default: 10 sec) HTTP Timeout in seconds to use
         :param int retries: (INTERNAL USE) Used internally for automatic retry. To disable retry, set to ``False``
         :return:
         """
         node = self.node
         try:
-            r = await self.http.post(node, data=json.dumps(data), headers=self.config('headers', {}), timeout=timeout)
+            r = await self.http.post(
+                node, data=json.dumps(data), headers=self.config('headers', {}), timeout=empty_if(timeout, self.config('timeout', 10))
+            )
             r.raise_for_status()
             response = r.json()
             if type(response) is list:
@@ -417,6 +427,9 @@ class SteemAsync(CacheHelper):
             await self.next_node()
             await sleep(self.retry_delay)
             return await self.json_list_call(data=data, timeout=timeout, retries=retries)
+        finally:
+            if SteemAsync.context_level == 0:
+                await self.http.aclose()
 
     async def api_call(self, api: str, method: str, params: Union[dict, list] = None, retries=0) -> Union[dict, list]:
         """
@@ -589,7 +602,14 @@ class SteemAsync(CacheHelper):
         await self.set_cache(cache_key, accs)
         return accs
 
-
+    async def __aenter__(self):
+        SteemAsync.context_level += 1
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        SteemAsync.context_level -= 1
+        if SteemAsync.context_level <= 0:
+            await self.http.aclose()
 
 
 
