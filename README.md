@@ -125,7 +125,7 @@ Steem-Async is much faster than Beem and other synchronous libraries, due to ful
 as the use of bulk/bundled calls (combining multiple calls into one request) - especially when it comes to tasks 
 which involve highly parallel queries, such as retrieving 1000's of blocks from the blockchain.
 
-Please see the [benchmarks folder](https://github.com/Privex/steem-async/tree/master/benchmarks) to see the results of our 
+Please see the [benchmarks folder](https://github.com/Privex/steem-async/tree/master/privex/steem/benchmarks) to see the results of our 
 benchmarks, as well as information on how you can run our benchmarks on your own system.
 
 # Information
