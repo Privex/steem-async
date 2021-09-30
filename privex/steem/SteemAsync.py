@@ -7,12 +7,13 @@ from datetime import datetime, timedelta
 from decimal import Decimal, getcontext, ROUND_HALF_EVEN
 from inspect import iscoroutinefunction
 from json import JSONDecodeError
-from typing import Union, List, Generator, Any, Dict, Tuple
+from typing import AsyncGenerator, Optional, Union, List, Generator, Any, Dict, Tuple
 
+import httpcore
 import httpx
 from async_property import async_property
 from httpx import HTTPError
-from privex.helpers import is_false, empty, is_true, run_sync, dec_round, chunked, stringify, DictObject
+from privex.helpers import T, is_false, empty, is_true, run_sync, dec_round, chunked, stringify, DictObject, BetterEvent
 from privex.helpers.common import empty_if
 
 from privex.steem.exceptions import RPCException, SteemException
@@ -148,10 +149,16 @@ class SteemAsync(CacheHelper):
     """
     DEFAULT_HIVE_NODES = [
         'https://hived.privex.io',
-        'https://hived.hive-engine.com',
-        'https://anyx.io'
+        'https://api.deathwing.me',
+        # 'https://hived.hive-engine.com',
+        'https://anyx.io',
+        'https://rpc.ausbit.dev',
+        'https://rpc.esteem.app',
+        'https://techcoderx.com',
+        'https://api.pharesim.me',
+        'https://direct.hived.privex.io',
         'https://api.openhive.network'
-        'https://api.hivekings.com'
+        # 'https://api.hivekings.com'
     ]
     DEFAULT_STEEM_NODES = ['https://api.steemit.com']
     DEFAULT_BLURT_NODES = ['https://blurtd.privex.io', 'https://api.blurt.blog', 'https://rpc.blurt.world']
@@ -163,7 +170,7 @@ class SteemAsync(CacheHelper):
         headers={'content-type': 'application/json'}
     )
 
-    http: httpx.AsyncClient = httpx.AsyncClient(timeout=10)
+    # http: httpx.AsyncClient = httpx.AsyncClient(timeout=10)
     context_level: int = 0
 
     def __init__(self, rpc_nodes: List[str] = None, max_retry=10, retry_delay=2, network='hive', **kwargs):
@@ -184,6 +191,13 @@ class SteemAsync(CacheHelper):
         self.known_assets, self.chain_assets = DictObject(KNOWN_ASSETS), DictObject(CHAIN_ASSETS)
         self.network = network = network.lower()
         
+        self.reuse_http = kwargs.pop('reuse_http', False)
+        self._httpx = kwargs.pop('httpx', None)
+        self.httpx_config = kwargs.pop('httpx_config', {})
+        self.http_timeout = kwargs.pop('http_timeout', 15)
+        if 'timeout' not in self.httpx_config: self.httpx_config['timeout'] = self.http_timeout
+        if 'http2' not in self.httpx_config: self.httpx_config['http2'] = kwargs.pop('http2', True)
+        
         if not empty(rpc_nodes, itr=True):
             rpc_nodes = [rpc_nodes] if type(rpc_nodes) is str else rpc_nodes
             self.CONFIG['rpc_nodes'] = rpc_nodes
@@ -192,16 +206,30 @@ class SteemAsync(CacheHelper):
         elif network == 'blurt':
             self.CONFIG['rpc_nodes'] = self.DEFAULT_BLURT_NODES
 
+        self.key_sbd = kwargs.get('key_sbd', 'sbd')
+        self.key_steem = kwargs.get('key_steem', 'steem')
         if network == 'steem':
             self.known_assets[CHAIN.STEEM.value] = add_known_asset_symbols(self.chain_assets.STEEM)
         elif network == 'hive':
             self.known_assets[CHAIN.HIVE.value] = add_known_asset_symbols(self.chain_assets.HIVE)
+            self.key_sbd, self.key_steem = kwargs.get('key_sbd', 'hbd'), kwargs.get('key_hive', 'hive')
         elif network == 'blurt':
             self.known_assets[CHAIN.BLURT.value] = add_known_asset_symbols(self.chain_assets.BLURT)
         
         self.CONFIG['current_node'] = self.CONFIG['rpc_nodes'][0]
         self.CONFIG['current_node_id'] = 0
         self.CONFIG['timeout'] = kwargs.get('timeout', self.CONFIG['timeout'])
+        
+        self.event_stop_stream = BetterEvent(name='stop_stream')
+        self.auto_reset_events = kwargs.get('auto_reset_events', True)
+    
+    @property
+    def http(self):
+        if self.reuse_http:
+            if not self._httpx:
+                self._httpx = httpx.AsyncClient(**self.httpx_config)
+            return self._httpx
+        return httpx.AsyncClient(**self.httpx_config)
     
     @property
     def use_appbase(self) -> bool: return is_true(self.config('use_appbase', True))
@@ -229,6 +257,7 @@ class SteemAsync(CacheHelper):
 
     @async_property
     async def chain_id(self) -> str:
+        """An async property which retrieves the chain ID for the current network"""
         async def _chain_id():
             conf = await self.node_config
             chain = None
@@ -297,6 +326,16 @@ class SteemAsync(CacheHelper):
         self.CONFIG['next_id'] += 1
         return self.CONFIG['next_id']
 
+    def stop_streaming(self):
+        """Sets the event :attr:`.event_stop_stream` which requests :meth:`.stream_blocks` to stop retrieving blocks"""
+        if not self.event_stop_stream.is_set():
+            self.event_stop_stream.set()
+    
+    def start_streaming(self):
+        """Clears the event :attr:`.event_stop_stream` (if it was previously set) which allows :meth:`.stream_blocks` to retrieve blocks"""
+        if self.event_stop_stream.is_set():
+            self.event_stop_stream.clear()
+
     async def json_call(self, method: str, params: Union[dict, list] = None, jid=None, retries=0) -> Union[dict, list]:
         """
         Make an asynchronous JsonRPC call, with a given method, and parameters as either a dict/list.
@@ -338,9 +377,10 @@ class SteemAsync(CacheHelper):
 
         try:
             log.debug('Sending JsonRPC request to %s with payload: %s', node, payload)
-            r = await self.http.post(node, data=payload, headers=self.config('headers', {}), timeout=self.config('timeout', 10))
-            r.raise_for_status()
-            response = r.json()
+            async with self.http as h:
+                r = await h.post(node, data=payload, headers=self.config('headers', {}), timeout=self.config('timeout', 10))
+                r.raise_for_status()
+                response = r.json()
 
             if type(response) is list:
                 for rd in response:
@@ -359,9 +399,22 @@ class SteemAsync(CacheHelper):
             log.warning('Error message: %s %s', type(e), str(e))
             err = e
         except HTTPError as e:
-            log.warning('HTTP Error. Response was: %s', e.response.text)
-            log.warning('Original request: %s', e.request)
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                log.warning('HTTP Error. %s - "%s" - Response was: %s', type(e), str(e), e.response.text)
+            else:
+                log.warning('HTTP Error: %s - %s', type(e), str(e))
+            if hasattr(e, 'request'):
+                log.warning('Original request: %s', e.request)
             err = e
+        # except (Exception, ConnectionError, httpcore.ConnectError, AttributeError) as e:
+        #     # If retries is set to False, the user wants to disable automatic retry.
+        #     if retries is False: raise e
+        #     retries += 1
+        #     if retries > self.max_retry: raise e
+        #     log.warning('Error while calling api_call(%s, %s, %s) - retry %s out of %s', api, method, params, retries,
+        #                 self.max_retry)
+        #     await sleep(self.retry_delay)
+        #     await self.next_node()
         finally:
             if SteemAsync.context_level == 0:
                 await self.http.aclose()
@@ -403,11 +456,12 @@ class SteemAsync(CacheHelper):
         """
         node = self.node
         try:
-            r = await self.http.post(
-                node, data=json.dumps(data), headers=self.config('headers', {}), timeout=empty_if(timeout, self.config('timeout', 10))
-            )
-            r.raise_for_status()
-            response = r.json()
+            async with self.http as h:
+                r = await h.post(
+                    node, data=json.dumps(data), headers=self.config('headers', {}), timeout=empty_if(timeout, self.config('timeout', 10))
+                )
+                r.raise_for_status()
+                response = r.json()
             if type(response) is list:
                 for i, rl in enumerate(response):
                     if type(rl) is not dict:
@@ -451,7 +505,7 @@ class SteemAsync(CacheHelper):
         try:
             d = await self.json_call(method='call', params=[api, method, [] if not params else params])
             return d['result']
-        except Exception as e:
+        except (Exception, ConnectionError, httpcore.ConnectError, AttributeError) as e:
             # If retries is set to False, the user wants to disable automatic retry.
             if retries is False: raise e
             retries += 1
@@ -462,9 +516,90 @@ class SteemAsync(CacheHelper):
             await self.next_node()
             return await self.api_call(api=api, method=method, params=params, retries=retries)
 
-    async def get_blocks(self, start: int, end: int, auto_retry=True) -> List[Block]:
+    async def get_blocks_solo(self, start: int = -10, end: int = None, auto_retry=True, retries=0) -> List[Block]:
         """
+        Similar to :class:`.get_blocks` - but only makes a single bulk RPC call against a single node.
+        
+        You can set ``start`` and/or ``end`` as negative numbers if you want to retrieve a range of blocks relative to
+        behind the head block. You can also set ``end`` to ``None`` to make head block the end block.
+        
+        Usage:
 
+            >>> s = SteemAsync()
+            >>> blocks = await s.get_blocks(10000, 20000)
+            >>> print(blocks[100].number)
+            10101
+
+        :param int       start:     Load blocks starting from this block number (pass a negative number to set the start relative to
+                                    the end block - e.g. ``-100`` would mean 100 blocks before ``end``)
+        :param int|None    end:     Finish loading blocks and return after this block number. If this is set to ``None``, then it
+                                    will be set to the head block number. If this is set to a negative number, then it will be
+                                    relative block behind head block (e.g. ``-100`` would mean 100 blocks before head block).
+        :param bool auto_retry:     (Default: True) If changed to False, will NOT auto retry if we fail to get a chunk.
+        :return List[Block] blocks: A list of :class:`.Block` objects.
+        """
+        try:
+            hblock, start, end = await self.relative_head_block(start, end)
+            if empty(end): end = hblock
+            # Generate a list of JsonRPC calls for batch calling
+            if self.use_appbase:
+                bulk_calls = list(make_bulk_call(method='condenser_api.get_block', start=start, end=end))
+            else:
+                def _mkparams(i):
+                    return ['database_api', 'get_block', [i]]
+        
+                bulk_calls = list(make_bulk_call(method='call', start=start, end=end, mkparams=_mkparams))
+            cres = await self.json_list_call(bulk_calls, 120)
+            return [Block(number=b['id'], **b['result']) for b in cres]
+        except Exception as e:
+            # If retries is set to False, the user wants to disable automatic retry.
+            if retries is False: raise e
+            retries += 1
+            if retries > self.max_retry: raise e
+            log.warning('Error while calling get_blocks_solo(%s, %s) - retry %s out of %s', start, end, retries, self.max_retry)
+            await self.next_node()
+            await sleep(self.retry_delay)
+            return await self.get_blocks_solo(start=start, end=end, auto_retry=auto_retry, retries=retries)
+    
+    async def relative_head_block(self, *diffs: Union[int, bool, None, T], neg_only=True) -> Tuple[Union[int, T], ...]:
+        """
+        Outputs a tuple containing the head block, and generated relative-to head block numbers,
+        i.e. ``(head block + diff)`` for each passed number in ``diffs``.
+        
+        This allows you to get both the head block, AND generate numbers relative to the head block, e.g. passing ``-100`` will
+        get you back the head block minus 100, while passing ``20`` would get you the head block plus 20.
+        
+        Gets the head block number, creates a list of the head block + each difference in ``diffs``, and then returns
+        a tuple containing the head block, followed by each of the passed ``diffs`` relative to the head block.
+        
+        The ``neg_only`` keyword argument controls whether this method ALWAYS outputs relative block numbers, or
+        if it only uses negative diffs for relative blocks. By default, neg_only is True, so that positive block
+        numbers are returned as-is, while negative block numbers are assumed to be "blocks behind head".
+        
+        Example - get the relative blocks ``-100`` (100 before) and ``50`` (50 after) from the head block::
+          
+            >>> ss = SteemAsync()
+            >>> await ss.relative_head_block(-100, 50)
+            (57864002, 57863902, 50)
+            >>> await ss.relative_head_block(-100, 50, neg_only=False)
+            (57864002, 57863902, 57864052)
+            >>> head, start, end = await ss.relative_head_block(-100, 50, neg_only=False)
+        
+        """
+        hblock = await self.get_head_block_number()
+        ndiffs = []
+        for d in diffs:
+            ndiffs += [d] if d in [None, False] or (neg_only and int(d) >= 0) else [hblock + int(d)]
+        return tuple([hblock] + ndiffs)
+    
+    async def get_blocks(self, start: int = -100, end: int = None, auto_retry=True) -> List[Block]:
+        """
+        Efficiently retrieves a range of blocks using both bulk RPC calls and distributing chunks of bulk RPC calls
+        between available RPC nodes.
+        
+        You can set ``start`` and/or ``end`` as negative numbers if you want to retrieve a range of blocks relative to
+        behind the head block. You can also set ``end`` to ``None`` to make head block the end block.
+        
         Usage:
 
             >>> s = SteemAsync()
@@ -473,12 +608,25 @@ class SteemAsync(CacheHelper):
             ...     print(blocks[100].number)
             10101
 
-        :param int       start:     Load blocks starting from this block number
-        :param int         end:     Finish loading blocks and return after this block number.
+        :param int       start:     Load blocks starting from this block number (pass a negative number to set the start relative to
+                                    the end block - e.g. ``-100`` would mean 100 blocks before ``end``)
+        :param int|None    end:     Finish loading blocks and return after this block number. If this is set to ``None``, then it
+                                    will be set to the head block number. If this is set to a negative number, then it will be
+                                    relative block behind head block (e.g. ``-100`` would mean 100 blocks before head block).
         :param bool auto_retry:     (Default: True) If changed to False, will NOT auto retry if we fail to get a chunk.
         :return List[Block] blocks: A list of :class:`.Block` objects.
 
         """
+        
+        hblock, start, end = await self.relative_head_block(start, end)
+        if empty(end): end = hblock
+
+        batch_size = self.config('batch_size', 40)
+        # If the total number of blocks to fetch, is lower than batch_size, then we might as well just fetch them
+        # from a single node - rather than split it between nodes.
+        if (end - start) < batch_size:
+            return await self.get_blocks_solo(start, end, auto_retry=auto_retry)
+        
         async def _get_chunk(c, retries=0):
             try:
                 cres = await self.json_list_call(c, 120)
@@ -489,6 +637,7 @@ class SteemAsync(CacheHelper):
                 retries += 1
                 if retries > self.max_retry: raise e
                 log.warning('Error while calling _get_chunk(%s) - retry %s out of %s', c, retries, self.max_retry)
+                log.warning('Reason: %s - %s', type(e), str(e))
                 await self.next_node()
                 await sleep(self.retry_delay)
                 return await _get_chunk(c=c, retries=retries)
@@ -502,22 +651,137 @@ class SteemAsync(CacheHelper):
             bulk_calls = list(make_bulk_call(method='call', start=start, end=end, mkparams=_mkparams))
 
         # Slice up the list of batch calls into chunks of ``batch_size`` to avoid hitting batch call limits.
-        chnk = self.config('batch_size', 40)
-        chunk_size = math.ceil(len(bulk_calls) / chnk) if len(bulk_calls) > chnk else 1
-        log.info("Dividing %s bulk calls into %s chunks", len(bulk_calls), chnk)
+        chunk_size = math.ceil(len(bulk_calls) / batch_size) if len(bulk_calls) > batch_size else 1
+        log.info("Dividing %s bulk calls into %s chunks", len(bulk_calls), batch_size)
         chunks = list(chunked(bulk_calls, chunk_size))
 
         # Finally, fire off the batch calls, and return a flat list of Block's
         chunk_res = await asyncio.gather(*[_get_chunk(c, retries=_retries) for c in chunks])
         return [blk for sl in chunk_res for blk in sl]
 
-    async def get_block(self, num) -> Block:
+    async def get_block(self, num: Union[int, str]) -> Block:
+        """Obtains the block ``num`` and returns it as a :class:`.Block` object"""
+        num = int(num)
         if is_true(self.config('use_appbase', True)):
             d = await self.json_call('condenser_api.get_block', [num])
             d = d['result']
         else:
             d = await self.api_call('database_api', 'get_block', [num])
         return Block(number=num, **d)
+
+    async def get_head_block_number(self) -> int:
+        """Obtains the head block number via :meth:`.get_props` and then returns it as an integer."""
+        p = await self.get_props()
+        return int(p['head_block_number'])
+
+    async def get_head_block(self) -> Block:
+        """Retrieves the current head block as a :class:`.Block` object"""
+        return await self.get_block(await self.get_head_block_number())
+
+    async def stream_blocks(self, before: int = 20, end_after: Optional[int] = 10, wait_block=3.5) -> AsyncGenerator[Block, None]:
+        """
+        This method allows you to stream blocks as they become available, instead of having to load all of the blocks that you want
+        into memory - as well as allowing you to wait for new blocks to be produced, which can be useful if you're waiting
+        for a transaction to appear in a future block, or if you just need to constantly stream blocks for some kind-of
+        block scanning code.
+        
+        This will use :meth:`.get_blocks` to efficiently batch call / chunk get_block requests between nodes for the ``before``
+        blocks behind head block, as well as for syncing up to the head block when new blocks become available.
+        
+        If you want the stream to start at the head block, rather than syncing blocks behind the head block first, then
+        simply pass ``before=0`` to disable pre-block loading.
+        
+        Similarly, if you ONLY want to stream the pre-blocks (the ``before`` blocks behind head), then set ``end_after=0``
+        while setting ``before`` to a positive integer.
+        
+        For long term block streaming with no set end, you can set ``end_after=None`` for indefinite streaming. If at some point
+        you decide you want to stop streaming cleanly, you can call :meth:`.stop_streaming`, which will use :attr:`.event_stop_stream`
+        to inform the method's loop that it's time to stop.
+        
+        Example Usage::
+        
+            >>> ss = SteemAsync()
+            >>> # Yield the 10 blocks before the current head block, the head block itself, and then yielding each
+            >>> # block as soon as it becomes available, waiting for 'wait_block' seconds between head block checks until
+            >>> # the next head block(s) are available, finally stopping after it's yielded all 4 blocks after head block.
+            >>> async for b in ss.stream_blocks(10, 4):
+            ...     print("Got block number:", b.number)
+            Got block number: 57864683
+            ...
+            Got block number: 57864691
+            Got block number: 57864692
+            ...
+            Got block number: 57864696
+            Got block number: 57864697
+        
+        Example indefinite streaming with triggered stream stop (WARNING: It may yield 1 or 2 more times before fully stopping)::
+        
+            >>> i = 0
+            >>> async for b in ss.stream_blocks(0, None):
+            ...    i += 1
+            ...    print(f" ({i} / 10) Got block number:", b.number)
+            ...    if i >= 10:
+            ...        print("Requesting stream to stop...")
+            ...        ss.stop_streaming()
+             (1 / 10) Got block number: 57865368
+             (2 / 10) Got block number: 57865369
+             ...
+             (9 / 10) Got block number: 57865376
+             (10 / 10) Got block number: 57865377
+             Requesting stream to stop...
+             (11 / 10) Got block number: 57865378
+             Requesting stream to stop...
+        
+        """
+        head, start, end = await self.relative_head_block(-before, end_after, neg_only=False)
+        
+        if start > 0:
+            preblocks = await self.get_blocks(start, head)
+            for b in preblocks:
+                yield b
+        
+        has_end = end not in [None, False]
+        
+        if has_end and end <= 0:
+            return
+        
+        curb = head
+        
+        while not has_end or curb <= end:
+            if self.event_stop_stream.is_set():
+                log.debug("event_stop_stream is set - something requested the stream needs to end. breaking while loop.")
+                break
+            curhead = await self.get_head_block_number()
+            if curhead < curb:
+                log.debug(" [Start: %d | End: %s] Current head %d is <= current loop block %d - sleeping %f seconds ...",
+                          start, end, curhead, curb, wait_block)
+                await asyncio.sleep(wait_block)
+                continue
+            if has_end:
+                if curhead >= end:
+                    log.debug(" [Start: %d | End: %s] Getting final blocks: %d to %d (ends before %d - last block is %d)",
+                              start, end, curb, end + 1, end + 1, end)
+                    nextblocks = await self.get_blocks(curb, end + 1)
+                    log.debug(" Yielding %d blocks ...", len(nextblocks))
+                    for b in nextblocks:
+                        yield b
+                    curb = end + 1
+                    break
+            log.debug(" [Start: %d | End: %s] Getting next blocks up to head: %d to %d (ends before %d - last block is %d)",
+                      start, end, curb, curhead + 1, curhead + 1, curhead)
+            nextblocks = await self.get_blocks(curb, curhead + 1)
+            if self.event_stop_stream.is_set():
+                log.debug("event_stop_stream is set - something requested the stream needs to end. breaking while loop.")
+                break
+            log.debug(" Yielding %d blocks ...", len(nextblocks))
+            for b in nextblocks:
+                yield b
+            curb = curhead + 1
+            log.debug(" [Start: %d | End: %s] Synced up to head %d - current loop block %d - sleeping %f seconds ...",
+                      start, end, curhead, curb, wait_block)
+            await asyncio.sleep(wait_block)
+        if self.auto_reset_events:
+            self.start_streaming()
 
     async def get_props(self) -> dict:
         """Queries and returns chain dynamic global props as a dict"""
@@ -538,7 +802,30 @@ class SteemAsync(CacheHelper):
         d = await self.get_props()
         return int(d['head_block_number'])
 
-    async def account_history(self, account, start=-1, limit=1000):
+    async def account_history(self, account: str, start=-1, limit=1000) -> List[List[Union[int, dict]]]:
+        """
+        Retrieves the account history for ``account``. History is returned as a :class:`.list` of lists, with the nested lists
+        containing the block number as the first item, while the second item is the history event as a :class:`.dict`.
+        
+            >>> ss = SteemAsync()
+            >>> hist = await ss.account_history('someguy123')
+            >>> len(hist)
+            1000
+            >>> hist[0]
+            [
+                2489699,
+                {
+                  'trx_id': '0000000000000000000000000000000000000000',
+                  'block': 57846095,
+                  'trx_in_block': 4294967295,
+                  'op_in_trx': 0,
+                  'virtual_op': 1,
+                  'timestamp': '2021-09-29T11:37:00',
+                  'op': ['producer_reward', {'producer': 'someguy123', 'vesting_shares': '454.699890 VESTS'}]
+                }
+            ]
+        
+        """
         # "params": ["condenser_api", "get_account_history", ["aafeng", 105255, 1000]]
         start, limit = int(start), int(limit)
         if is_true(self.config('use_appbase', True)):
@@ -572,11 +859,62 @@ class SteemAsync(CacheHelper):
         amount = Decimal(balance['amount']) / Decimal(math.pow(10, asset.precision))
         return Amount(asset=asset, amount=dec_round(amount=amount, dp=asset.precision))
 
-    async def get_balances(self, account) -> Dict[str, Amount]:
+    async def get_balances(self, account: str) -> Dict[str, Amount]:
+        """
+        Get the balances for the account ``account``, as a dictionary mapping each balance coin symbol to an :class:`.Amount` object.
+        
+        Example::
+        
+            >>> ss = SteemAsync()
+            >>> await ss.get_balances('someguy123')
+            {'HIVE': <Amount '2015.429 HIVE' precision=3>,
+             'HBD': <Amount '118.305 HBD' precision=3>,
+             'VESTS': <Amount '298705811.730521 VESTS' precision=6>}
+        
+        """
         accs = await self.get_accounts(account)
         return accs[account].balances
 
-    async def get_accounts(self, *accounts) -> Dict[str, Account]:
+    async def get_accounts(self, *accounts: str) -> Dict[str, Account]:
+        """
+        Get the accounts ``accounts`` - returned as a dictionary which maps each account name to an :class:`.Account` object.
+        
+        Example::
+            
+            >>> ss = SteemAsync()
+            >>> accs = ss.get_accounts('someguy123')
+            >>> print(accs)
+            {
+                'someguy123': Account(
+                    name='someguy123',
+                    id=45923,
+                    vesting_shares={'amount': '298703985582487', 'precision': 6, 'nai': '@@000000037'},
+                    delegated_vesting_shares={ 'amount': '137826315049502', 'precision': 6, 'nai': '@@000000037' },
+                    received_vesting_shares={ 'amount': '0', 'precision': 6, 'nai': '@@000000037' },
+                    vesting_withdraw_rate={ 'amount': '0', 'precision': 6, 'nai': '@@000000037' },
+                    next_vesting_withdrawal='1969-12-31T23:59:59',
+                    vesting_balance=None,
+                    balance={'amount': '2015429', 'precision': 3, 'nai': '@@000000021'},
+                    savings_balance={'amount': '0', 'precision': 3, 'nai': '@@000000021'},
+                    sbd_balance={'amount': '118305', 'precision': 3, 'nai': '@@000000013'},
+                    balances={
+                        'HIVE': <Amount '2015.429 HIVE' precision=3>,
+                        'HBD': <Amount '118.305 HBD' precision=3>,
+                        'VESTS': <Amount '298703985.582487 VESTS' precision=6>
+                    },
+                    savings_sbd_balance={ 'amount': '686686', 'precision': 3, 'nai': '@@000000013' },
+                    witness_votes=[],
+                    created='2016-08-04T20:51:57',
+                    recovery_account='steem',
+                    memo_key='STM5gdbygHHSGwVY8oC45dntaApS9pFiSB24zdPoSkZLbb2KrNVnr',
+                    owner={'weight_threshold': 1, 'account_auths': [],
+                           'key_auths': [['STM8V7iybXuAtTaGpAknChzJpZCaNs7X5UauHxTScbXawwtbAnkFT', 1]] },
+                    posting={ 'weight_threshold': 1, 'account_auths': [['steemauto', 1], ['streemian', 1]],
+                              'key_auths': [['STM5bqqvHrLa7Z22qQxQ4DscU2ccDBR7w2qf5QUNoFZEoNY5a36Vf', 1]] },
+                    json_metadata='{"test":"testing"}'
+                )
+            }
+        """
         _accs = list(accounts)
         _accs.sort()
         cache_key = f'accounts:{",".join(_accs)}'
@@ -593,7 +931,7 @@ class SteemAsync(CacheHelper):
         accs = {}
         for i, r in enumerate(res):
             b = {}
-            for bal in [r['balance'], r['sbd_balance'], r['vesting_shares']]:
+            for bal in [r['balance'], r[f'{self.key_sbd}_balance'], r['vesting_shares']]:
                 amt = await self._parse_balance(bal)
                 b[amt.symbol] = amt
             acc = Account.from_dict(dict(balances=b, **r))

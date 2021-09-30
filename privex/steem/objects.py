@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import List, Dict, Union
 
-from privex.helpers import empty, DictObject
+from privex.helpers import DictDataClass, empty, DictObject
 
 
 class Dictable:
@@ -57,7 +57,7 @@ class Dictable:
 
 
 @dataclass
-class Operation(Dictable):
+class Operation(DictDataClass):
     op_type: str
     op_block_num: int
     op_txid: str
@@ -67,7 +67,7 @@ class Operation(Dictable):
 
 
 @dataclass
-class Transaction(Dictable):
+class Transaction(DictDataClass):
     block_num: int
     expiration: str
     extensions: list
@@ -93,7 +93,7 @@ class Transaction(Dictable):
 
 
 @dataclass
-class Block(Dictable):
+class Block(DictDataClass):
     number: int
     block_id: str
     extensions: list
@@ -131,7 +131,7 @@ class CHAIN(Enum):
 
 
 @dataclass
-class Asset(Dictable):
+class Asset(DictDataClass):
     symbol: str
     precision: int = 3
     asset_id: str = None
@@ -209,7 +209,7 @@ for chain in list(CHAIN):  # type: CHAIN
 
 
 @dataclass
-class Amount(Dictable):
+class Amount(DictDataClass):
     asset: Asset
     amount: Decimal
 
@@ -230,7 +230,7 @@ class Amount(Dictable):
 
 
 @dataclass
-class Account(Dictable):
+class Account(DictDataClass):
     name: str
     id: int = None
 
@@ -256,3 +256,28 @@ class Account(Dictable):
     posting: dict = field(default_factory=dict)
 
     json_metadata: str = "{}"
+
+    raw_data: Union[dict, DictObject] = field(default_factory=DictObject, repr=False)
+
+    @property
+    def hbd_balance(self):
+        return self.sbd_balance
+    
+    @hbd_balance.setter
+    def hbd_balance(self, value):
+        self.sbd_balance = value
+
+    @property
+    def savings_hbd_balance(self):
+        return self.savings_sbd_balance
+
+    @savings_hbd_balance.setter
+    def savings_hbd_balance(self, value):
+        self.savings_sbd_balance = value
+    
+    def __post_init__(self):
+        if 'hbd_balance' in self.raw_data:
+            self.sbd_balance = self.raw_data['hbd_balance']
+        if 'savings_hbd_balance' in self.raw_data:
+            self.savings_sbd_balance = self.raw_data['savings_hbd_balance']
+

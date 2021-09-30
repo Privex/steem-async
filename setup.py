@@ -18,7 +18,7 @@ Copyright::
     +===================================================+
 
     Async Steem library - A simple Python library for asynchronous interactions with Steem RPC nodes (and forks)
-    Copyright (c) 2019    Privex Inc. ( https://www.privex.io )
+    Copyright (c) 2021    Privex Inc. ( https://www.privex.io )
 
     Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation
     files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,
@@ -46,7 +46,7 @@ with open("README.md", "r") as fh:
 setup(
     name='steem_async',
 
-    version='1.2.0',
+    version='2.0.0',
 
     description='A simple Python library for asynchronous interactions with Hive/Steem RPC nodes (and forks)',
     long_description=long_description,
@@ -57,11 +57,14 @@ setup(
 
     license='MIT',
     install_requires=[
-        'httpx>=0.7', 'privex-helpers>=2.10.0', 'async-property>=0.2.1'
+        'httpx[http2]>=0.7', 'privex-helpers>=3.0.0', 'async-property>=0.2.1'
     ],
-    packages=find_packages(),
+    packages=find_packages(exclude=['tests', 'tests.*', 'test.*', 'privex.db', 'privex.db.*']),
     classifiers=[
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
