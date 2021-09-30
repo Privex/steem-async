@@ -7,6 +7,7 @@ name = "pypi"
 httpx = {version = ">=0.7", extras = ["http2"]}
 privex-helpers = ">=3.0"
 async-property = ">=0.2.1"
+rich = "*"
 
 [dev-packages]
 jupyter = "*"
@@ -14,6 +15,7 @@ pytest = "*"
 pytest-asyncio = "*"
 twine = "*"
 setuptools = "*"
+beem = "*"
 
 [requires]
 python_version = "3.9"

@@ -111,7 +111,20 @@ class SteemAsync(CacheHelper):
         >>> blocks = await s.get_blocks(10000, 20000)
         >>> print(blocks[100].number)
         10100
-
+    
+    You can also call undefined methods, so long as they match up to a condenser_api call (or database_api call for non-appbase),
+    as :meth:`.__getattr__` will dynamically generate a wrapped async method for the equivalent RPC call using :meth:`.wrapped_call`
+    
+    Example 1. - ``SteemAsync().get_ticker()`` would be translated to ``wrapped_call('get_ticker')``
+                 RPC Method: ``condenser_api.get_ticker``
+                 RPC Params: ``[]``
+     
+    Example 2. - ``SteemAsync().lookup_account_names(['someguy123', True])`` would be translated
+                 to ``wrapped_call('lookup_account_names', ['someguy123', True])``
+                 RPC Method: ``condenser_api.lookup_account_names``
+                 RPC Params: ``[['someguy123', True]]``
+    
+    
     If there isn't a wrapper function for what you need, you can use json_call and api_call directly:
 
         >>> # Appbase call
@@ -129,7 +142,7 @@ class SteemAsync(CacheHelper):
     Copyright::
 
         +===================================================+
-        |                 © 2019 Privex Inc.                |
+        |                 © 2021 Privex Inc.                |
         |               https://www.privex.io               |
         +===================================================+
         |                                                   |
@@ -875,6 +888,22 @@ class SteemAsync(CacheHelper):
         accs = await self.get_accounts(account)
         return accs[account].balances
 
+    async def get_witness(self, account: str) -> Dict[str, Any]:
+        if is_true(self.config('use_appbase', True)):
+            a = await self.json_call('condenser_api.get_witness_by_account', [account])  # type: Dict[Any]
+            res = a['result']
+        else:
+            res = await self.api_call('database_api', 'get_witness_by_account', [account])
+        return res
+    
+    async def get_witness_list(self, account: Optional[str] = None, limit: int = 21) -> List[Dict[str, Any]]:
+        if is_true(self.config('use_appbase', True)):
+            a = await self.json_call('condenser_api.get_witnesses_by_vote', [account, limit])  # type: Dict[Any]
+            res = a['result']
+        else:
+            res = await self.api_call('database_api', 'get_witnesses_by_vote', [account, limit])
+        return res
+    
     async def get_accounts(self, *accounts: str) -> Dict[str, Account]:
         """
         Get the accounts ``accounts`` - returned as a dictionary which maps each account name to an :class:`.Account` object.
@@ -940,6 +969,24 @@ class SteemAsync(CacheHelper):
         await self.set_cache(cache_key, accs)
         return accs
 
+    async def wrapped_call(self, method: str, params: Union[list, dict, Any] = None, module: str = None) -> Union[dict, list, Any]:
+        """
+        This is a simple method which calls an RPC method under ``condenser_api`` (if appbase is enabled),
+        or ``database_api`` (if appbase is disabled), unless you set ``module`` to specify a base module.
+        
+        It's used in :meth:`.__getattr__` for dynamically generated methods, e.g. ``SteemAsync().get_ticker()``
+        would be translated to ``wrapped_call('get_ticker')`` - while ``SteemAsync().lookup_account_names(['someguy123', True])``
+        would be translated to ``wrapped_call('lookup_account_names', ['someguy123', True])``
+        """
+        if is_true(self.config('use_appbase', True)):
+            module = empty_if(module, 'condenser_api')
+            a = await self.json_call(f'{module}.{method}', params)  # type: Dict[Any]
+            res = a['result']
+        else:
+            module = empty_if(module, 'database_api')
+            res = await self.api_call(module, method, params)
+        return res
+
     async def __aenter__(self):
         SteemAsync.context_level += 1
         return self
@@ -949,5 +996,20 @@ class SteemAsync(CacheHelper):
         if SteemAsync.context_level <= 0:
             await self.http.aclose()
 
-
-
+    def __getattr__(self, item):
+        """
+        This magic method is used to dynamically generate instance methods which translate directly to the same-named RPC call,
+        using :meth:`.wrapped_call`
+        
+        Example 1. - ``SteemAsync().get_ticker()`` would be translated to ``wrapped_call('get_ticker')``
+        
+        Example 2. - ``SteemAsync().lookup_account_names(['someguy123', True])`` would be translated
+                     to ``wrapped_call('lookup_account_names', ['someguy123', True])``
+        
+        """
+        try:
+            return object.__getattribute__(self, item)
+        except AttributeError:
+            async def _wrapped(*args, **kwargs):
+                return await self.wrapped_call(item, list(args), **kwargs)
+            return _wrapped

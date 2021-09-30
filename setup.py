@@ -46,7 +46,7 @@ with open("README.md", "r") as fh:
 setup(
     name='steem_async',
 
-    version='2.0.0',
+    version='2.1.0',
 
     description='A simple Python library for asynchronous interactions with Hive/Steem RPC nodes (and forks)',
     long_description=long_description,
@@ -57,9 +57,10 @@ setup(
 
     license='MIT',
     install_requires=[
-        'httpx[http2]>=0.7', 'privex-helpers>=3.0.0', 'async-property>=0.2.1'
+        'httpx[http2]>=0.7', 'privex-helpers>=3.0.0', 'async-property>=0.2.1', 'rich'
     ],
-    packages=find_packages(exclude=['tests', 'tests.*', 'test.*', 'privex.db', 'privex.db.*']),
+    extras_require=dict(bench=['beem']),
+    packages=find_packages(exclude=['tests', 'tests.*', 'test.*', 'privex.db', 'privex.db.*', 'benchmarks']),
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.7",

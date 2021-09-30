@@ -1,11 +1,11 @@
 # Steem Async
-### Async Steem library - A simple Python library for asynchronous interactions with Steem RPC nodes (and forks)
+## Async Steem library - A simple Python library for asynchronous interactions with Steem RPC nodes (and forks)
 
 [![Build Status](https://travis-ci.com/Privex/steem-async.svg?branch=master)](https://travis-ci.com/Privex/steem-async)
 
 **Official Repo:** https://github.com/privex/steem-async
 
-### Quick Install / Usage
+## Quick Install / Usage
 
 **WARNING:** Due to use of modern Python features such as dataclasses, you MUST use **Python 3.7** or newer. This
 library is **not compatible with Python 3.6 or older versions**.
@@ -76,6 +76,57 @@ a method's brackets (including the constructor brackets) to see the parameters y
 Alternatively, just view the files inside of `privex/steem/` - most methods and constructors
 are adequently commented with PyDoc.
 
+# Steem Async CLI tool
+
+You can use Steem Async to make RPC calls directly from the CLI, with pretty printed output :)
+
+```sh
+# Show the CLI help page
+python3 -m privex.steem -h
+
+# Get the current block and output it as JSON
+python3 -m privex.steem get_block
+
+# Get block 123456 but disable human friendly indentation (but not syntax highlighting)
+python3 -m privex.steem -r get_block 123456
+
+
+# Get block 123456 but disable BOTH human friendly indentation AND syntax highlighting
+# This can be important if you're using the output in a script
+python3 -m privex.steem -nr -r get_block 123456
+
+# Get block 1234567 - use the custom node list https://hived.privex.io + https://anyx.io
+python3 -m privex.steem -n https://hived.privex.io,https://anyx.io get_block 1234567
+
+# Get the current head block number and print it
+python3 -m privex.steem get_head_block
+
+# Get the account balances for someguy123 as JSON
+python3 -m privex.steem get_balances someguy123
+
+# Get the account balances for someguy123 as JSON, but cast the numbers to floats instead of strings
+python3 -m privex.steem -dc float get_balances someguy123
+
+# Make a custom RPC call - calling the method get_ticker with no params
+python3 -m privex.steem call get_ticker
+
+# Using '-I' will enable number casting, so that '10' is converted to an integer param instead of a string
+python3 -m privex.steem call -I get_order_book 10
+
+# For calls that require nested lists/dicts, you can use '-j' to parse parameters as JSON,
+# or use '-c' to parse parameters as CSV (CSV columns are auto-casted from numbers/bools)
+python3 -m privex.steem call -j lookup_account_names '["someguy123", true]'
+python3 -m privex.steem call -j lookup_account_names call -c lookup_account_names someguy123,true
+```
+
+# Benchmarks compared to Beem and other libraries
+
+Steem-Async is much faster than Beem and other synchronous libraries, due to fully supporting AsyncIO, as well 
+as the use of bulk/bundled calls (combining multiple calls into one request) - especially when it comes to tasks 
+which involve highly parallel queries, such as retrieving 1000's of blocks from the blockchain.
+
+Please see the [benchmarks folder](https://github.com/Privex/steem-async/tree/master/benchmarks) to see the results of our 
+benchmarks, as well as information on how you can run our benchmarks on your own system.
 
 # Information
 
@@ -234,4 +285,5 @@ Here's the important bits:
 
 # Thanks for reading!
 
-**If this project has helped you, consider [grabbing a VPS or Dedicated Server from Privex](https://www.privex.io) - prices start at as little as US$8/mo (we take cryptocurrency!)**
+**If this project has helped you, consider [grabbing a VPS or Dedicated Server from Privex](https://www.privex.io) - prices**
+**start at as little as US$0.99/mo (we take cryptocurrency!)**
